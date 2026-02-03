@@ -1,0 +1,33 @@
+# Audio files
+*.mp3
+*.wav
+*.m4a
+*.ogg
+*.flac
+*.webm
+
+# Transcripts (but not requirements.txt)
+audio_files/*.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment variables
+.env
+
+# Temporary compressed files
+temp_compressed_*
