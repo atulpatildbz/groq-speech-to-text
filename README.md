@@ -2,6 +2,28 @@
 
 Fast and accurate speech-to-text transcription using Groq's Whisper Large V3 API with automatic audio compression for large files.
 
+## Two Workflows Available
+
+This project supports **two independent workflows**:
+
+### 1. 📁 Local Workflow (Standalone)
+Transcribe audio files from your local `./audio_files` directory.
+- ✅ Simple and fast
+- ✅ No cloud setup needed (except Groq API key)
+- ✅ Great for quick transcriptions
+
+👉 **Script**: `speech_to_text.py`
+
+### 2. ☁️ Google Drive Workflow (Automated)
+Sync between two Google Drive accounts: download from Account 1, transcribe, upload to Account 2.
+- ✅ Cross-account automation
+- ✅ Moves processed files to "processed" subfolder
+- ✅ Can run manually or on a schedule (minimum 2-hour intervals)
+
+👉 **Script**: `gdrive_sync.py` (see [SETUP_GUIDE.md](SETUP_GUIDE.md) for setup)
+
+---
+
 ## Features
 
 - 🚀 **Fast transcription** using Groq's optimized Whisper Large V3 model
@@ -10,6 +32,7 @@ Fast and accurate speech-to-text transcription using Groq's Whisper Large V3 API
 - 📝 **Batch processing** for multiple audio files
 - 💾 **Auto-save** transcriptions as text files
 - 🔍 **Detailed metadata** including duration and detected language
+- ☁️ **Google Drive integration** for automated cross-account workflows
 
 ## Requirements
 
@@ -51,20 +74,48 @@ sudo apt-get install ffmpeg
 GROQ_API_KEY=your_api_key_here
 ```
 
-3. Place your audio files in the `audio_files/` directory
-
 ## Usage
 
-Run the transcription script:
+### Option 1: Local Workflow (Simple)
+
+**For quick local transcriptions:**
+
+1. Place your audio files in the `audio_files/` directory
+
+2. Run the transcription script:
 ```bash
 python speech_to_text.py
 ```
 
 The script will:
-1. Find all audio files in the `audio_files/` directory
-2. Automatically compress large files (>25MB) to meet API limits
-3. Transcribe each audio file using Whisper Large V3
-4. Save transcriptions as `.txt` files in the same directory
+- Find all audio files in the `audio_files/` directory
+- Automatically compress large files (>25MB) to meet API limits
+- Transcribe each audio file using Whisper Large V3
+- Save transcriptions as `.txt` files in the same directory
+
+### Option 2: Google Drive Workflow (Automated)
+
+**For automated cross-account transcription:**
+
+1. Complete the Google Drive setup (see [SETUP_GUIDE.md](SETUP_GUIDE.md))
+
+2. Run manually:
+```bash
+python gdrive_sync.py
+```
+
+3. Or run on a schedule (every 2+ hours):
+```bash
+python gdrive_scheduler.py
+```
+
+The script will:
+- Download MP3 files from Google Drive (Account 1)
+- Transcribe using Groq
+- Upload `.txt` files to Google Drive (Account 2)
+- Move original MP3s to "processed" subfolder in Account 1
+
+**Setup required**: OAuth credentials, folder IDs. See [SETUP_GUIDE.md](SETUP_GUIDE.md) for step-by-step instructions.
 
 ## Supported Audio Formats
 
@@ -124,14 +175,28 @@ You can modify the transcription settings in `speech_to_text.py`:
 
 ## Troubleshooting
 
-### "ffmpeg not found" error
-Install ffmpeg using the commands in the Installation section.
+### Local Workflow (`speech_to_text.py`)
 
-### "Request Entity Too Large" error
-The script should automatically compress large files. If this persists, try manually compressing your audio file before processing.
+**"ffmpeg not found" error**
+- Install ffmpeg using the commands in the Installation section.
 
-### "API key not found" error
-Ensure your `.env` file exists and contains a valid `GROQ_API_KEY`.
+**"Request Entity Too Large" error**
+- The script should automatically compress large files. If this persists, try manually compressing your audio file before processing.
+
+**"API key not found" error**
+- Ensure your `.env` file exists and contains a valid `GROQ_API_KEY`.
+
+### Google Drive Workflow (`gdrive_sync.py`)
+
+**"credentials_account1.json not found"**
+- Download OAuth credentials from Google Cloud Console
+- See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed instructions
+
+**"Please set SOURCE_FOLDER_ID and DEST_FOLDER_ID"**
+- Add folder IDs to your `.env` file
+- Get folder IDs from Google Drive URLs
+
+For more troubleshooting, see [SETUP_GUIDE.md](SETUP_GUIDE.md)
 
 ## License
 
