@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""
+Google Drive Speech-to-Text Sync
+Monitors a Google Drive folder (account 1) for MP3 files,
+transcribes them, and uploads transcripts to another folder (account 2)
+"""
+import os
+import io
+import time
+from pathlib import Path
+from datetime import datetime
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+import pickle
+
+from dotenv import load_dotenv
+from groq import Groq
+
+# Load environment variables
+load_dotenv()
+
+# If modifying these scopes, delete token files
+SCOPES = ['https://www.googleapis.com/auth/drive']
+
+# Configuration
+TEMP_DOWNLOAD_DIR = Path("./temp_downloads")
+TEMP_DOWNLOAD_DIR.mkdir(exist_ok=True)
+
+# Groq client
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+
+def get_drive_service(credentials_file, token_file):
+    """
+    Authenticate and return Google Drive service
+
+    Args:
+        credentials_file: Path to OAuth2 credentials JSON
+        token_file: Path to store/load token pickle
+
+    Returns:
+        Google Drive service object
+    """
+    creds = None
+
+    # Token file stores user's access and refresh tokens
+    if os.path.exists(token_file):
+        with open(token_file, 'rb') as token:
+            creds = pickle.load(token)
+
+    # If no valid credentials, let user log in
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                credentials_file, SCOPES)
+            creds = flow.run_local_server(port=0)
+
+        # Save credentials for next run
+        with open(token_file, 'wb') as token:
+            pickle.dump(creds, token)
+
+    return build('drive', 'v3', credentials=creds)
+
+
+def list_audio_files(service, folder_id):
+    """
+    List all audio files in a Google Drive folder
+
+    Args:
+        service: Google Drive service
+        folder_id: Folder ID to search
+
+    Returns:
+        List of file metadata dicts
+    """
+    query = f"'{folder_id}' in parents and (mimeType='audio/mpeg' or mimeType='audio/mp3' or mimeType='audio/wav' or mimeType='audio/m4a') and trashed=false"
+
+    results = service.files().list(
+        q=query,
+        fields="files(id, name, mimeType, size, createdTime, modifiedTime, properties)",
+        orderBy="createdTime desc"
+    ).execute()
+
+    return results.get('files', [])
+
+
+def download_file(service, file_id, destination_path):
+    """
+    Download a file from Google Drive
+
+    Args:
+        service: Google Drive service
+        file_id: ID of file to download
+        destination_path: Local path to save file
+    """
+    request = service.files().get_media(fileId=file_id)
+
+    with open(destination_path, 'wb') as fh:
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+            if status:
+                print(f"  Download progress: {int(status.progress() * 100)}%")
+
+
+def upload_file(service, file_path, folder_id, filename=None):
+    """
+    Upload a file to Google Drive
+
+    Args:
+        service: Google Drive service
+        file_path: Local file path to upload
+        folder_id: Destination folder ID
+        filename: Optional custom filename
+
+    Returns:
+        Uploaded file ID
+    """
+    if filename is None:
+        filename = Path(file_path).name
+
+    file_metadata = {
+        'name': filename,
+        'parents': [folder_id]
+    }
+
+    media = MediaFileUpload(file_path, resumable=True)
+
+    file = service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields='id'
+    ).execute()
+
+    return file.get('id')
+
+
+def get_or_create_processed_folder(service, parent_folder_id):
+    """
+    Get or create a 'processed' subfolder in the parent folder
+
+    Args:
+        service: Google Drive service
+        parent_folder_id: Parent folder ID
+
+    Returns:
+        Processed folder ID
+    """
+    # Search for existing 'processed' folder
+    query = f"name='processed' and '{parent_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+
+    results = service.files().list(
+        q=query,
+        fields="files(id, name)"
+    ).execute()
+
+    folders = results.get('files', [])
+
+    if folders:
+        return folders[0]['id']
+
+    # Create 'processed' folder if it doesn't exist
+    file_metadata = {
+        'name': 'processed',
+        'mimeType': 'application/vnd.google-apps.folder',
+        'parents': [parent_folder_id]
+    }
+
+    folder = service.files().create(
+        body=file_metadata,
+        fields='id'
+    ).execute()
+
+    print(f"  Created 'processed' subfolder")
+    return folder.get('id')
+
+
+def move_to_processed(service, file_id, file_name, source_folder_id, processed_folder_id):
+    """
+    Move a file to the 'processed' subfolder
+
+    Args:
+        service: Google Drive service
+        file_id: File ID to move
+        file_name: File name (for display)
+        source_folder_id: Current parent folder ID
+        processed_folder_id: Destination 'processed' folder ID
+    """
+    # Remove file from source folder and add to processed folder
+    service.files().update(
+        fileId=file_id,
+        addParents=processed_folder_id,
+        removeParents=source_folder_id,
+        fields='id, parents'
+    ).execute()
+
+    print(f"  Moved '{file_name}' to 'processed' subfolder")
+
+
+def transcribe_audio_file(audio_path):
+    """
+    Transcribe audio file using Groq API (same logic as speech_to_text.py)
+
+    Args:
+        audio_path: Path to audio file
+
+    Returns:
+        Transcription text
+    """
+    print(f"  Transcribing with Groq Whisper Large V3...")
+
+    with open(audio_path, "rb") as audio_file:
+        transcription = groq_client.audio.transcriptions.create(
+            file=(Path(audio_path).name, audio_file.read()),
+            model="whisper-large-v3",
+            response_format="verbose_json",
+            temperature=0.0
+        )
+
+    return transcription.text
+
+
+def process_files(source_service, source_folder_id, dest_service, dest_folder_id):
+    """
+    Main processing function: download, transcribe, upload, move to processed
+
+    Args:
+        source_service: Google Drive service for account 1 (source)
+        source_folder_id: Source folder ID
+        dest_service: Google Drive service for account 2 (destination)
+        dest_folder_id: Destination folder ID
+    """
+    print(f"\n{'='*60}")
+    print(f"Starting sync at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}\n")
+
+    # Get or create 'processed' subfolder
+    print("Setting up 'processed' subfolder...")
+    processed_folder_id = get_or_create_processed_folder(source_service, source_folder_id)
+
+    # List audio files in source folder (excluding processed subfolder)
+    print("Fetching audio files from source folder...")
+    files = list_audio_files(source_service, source_folder_id)
+
+    if not files:
+        print("No audio files found in source folder.")
+        return
+
+    print(f"Found {len(files)} audio file(s)\n")
+
+    processed_count = 0
+    error_count = 0
+    local_audio_path = None
+    local_transcript_path = None
+
+    for file in files:
+        file_name = file['name']
+        file_id = file['id']
+        file_size_mb = int(file.get('size', 0)) / (1024 * 1024)
+
+        print(f"\n{'-'*60}")
+        print(f"File: {file_name}")
+        print(f"Size: {file_size_mb:.2f} MB")
+
+        try:
+            # Download file
+            print("Downloading...")
+            local_audio_path = TEMP_DOWNLOAD_DIR / file_name
+            download_file(source_service, file_id, local_audio_path)
+
+            # Transcribe
+            print("Transcribing...")
+            transcript_text = transcribe_audio_file(local_audio_path)
+
+            # Save transcript locally
+            transcript_filename = Path(file_name).stem + '.txt'
+            local_transcript_path = TEMP_DOWNLOAD_DIR / transcript_filename
+            local_transcript_path.write_text(transcript_text)
+
+            print(f"Transcription complete ({len(transcript_text)} characters)")
+
+            # Upload transcript to destination folder
+            print("Uploading transcript to destination folder...")
+            uploaded_file_id = upload_file(dest_service, local_transcript_path, dest_folder_id, transcript_filename)
+            print(f"Uploaded successfully (ID: {uploaded_file_id})")
+
+            # Move source file to 'processed' subfolder
+            print("Moving source file to 'processed' subfolder...")
+            move_to_processed(source_service, file_id, file_name, source_folder_id, processed_folder_id)
+
+            # Clean up local files
+            local_audio_path.unlink()
+            local_transcript_path.unlink()
+
+            processed_count += 1
+            print("✓ Complete")
+
+        except Exception as e:
+            print(f"✗ Error processing {file_name}: {str(e)}")
+            error_count += 1
+
+            # Clean up partial downloads
+            if local_audio_path and local_audio_path.exists():
+                local_audio_path.unlink()
+            if local_transcript_path and local_transcript_path.exists():
+                local_transcript_path.unlink()
+
+            continue
+
+    print(f"\n{'='*60}")
+    print(f"Sync complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Processed: {processed_count} | Errors: {error_count}")
+    print(f"{'='*60}\n")
+
+
+def main():
+    """Main entry point"""
+    # Configuration - Update these values
+    SOURCE_CREDENTIALS = "credentials_account1.json"  # OAuth2 credentials for account 1
+    SOURCE_TOKEN = "token_account1.pickle"  # Token storage for account 1
+    SOURCE_FOLDER_ID = os.getenv("SOURCE_FOLDER_ID")  # Folder ID in account 1
+
+    DEST_CREDENTIALS = "credentials_account2.json"  # OAuth2 credentials for account 2
+    DEST_TOKEN = "token_account2.pickle"  # Token storage for account 2
+    DEST_FOLDER_ID = os.getenv("DEST_FOLDER_ID")  # Folder ID in account 2
+
+    # Validate configuration
+    if not SOURCE_FOLDER_ID or not DEST_FOLDER_ID:
+        print("Error: Please set SOURCE_FOLDER_ID and DEST_FOLDER_ID in .env file")
+        return
+
+    if not os.path.exists(SOURCE_CREDENTIALS):
+        print(f"Error: {SOURCE_CREDENTIALS} not found. Please download OAuth2 credentials.")
+        return
+
+    if not os.path.exists(DEST_CREDENTIALS):
+        print(f"Error: {DEST_CREDENTIALS} not found. Please download OAuth2 credentials.")
+        return
+
+    # Authenticate both accounts
+    print("Authenticating with Google Drive accounts...")
+    source_service = get_drive_service(SOURCE_CREDENTIALS, SOURCE_TOKEN)
+    print("✓ Source account (account 1) authenticated")
+
+    dest_service = get_drive_service(DEST_CREDENTIALS, DEST_TOKEN)
+    print("✓ Destination account (account 2) authenticated")
+
+    # Process files
+    process_files(source_service, SOURCE_FOLDER_ID, dest_service, DEST_FOLDER_ID)
+
+
+if __name__ == "__main__":
+    main()

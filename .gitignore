@@ -29,5 +29,13 @@ ENV/
 # Environment variables
 .env
 
+# Google Drive credentials and tokens
+credentials_account*.json
+token_account*.pickle
+
+# Temporary downloads
+temp_downloads/
+
 # Temporary compressed files
 temp_compressed_*
+.DS_Store
