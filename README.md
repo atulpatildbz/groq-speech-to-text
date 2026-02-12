@@ -97,11 +97,18 @@ The script will:
 
 **For automated cross-account transcription:**
 
-1. Complete the Google Drive setup (see [SETUP_GUIDE.md](SETUP_GUIDE.md))
+1. Complete the Google Drive setup (see [GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md))
 
-2. Run manually:
+2. Run manually with date filtering:
 ```bash
-python gdrive_sync.py
+# Process files not transcribed in last 7 days (default)
+python gdrive_sync.py --days 7
+
+# Process files not transcribed in last 30 days
+python gdrive_sync.py --days 30
+
+# Process all files (no date filter)
+python gdrive_sync.py --days 0
 ```
 
 3. Or run on a schedule (every 2+ hours):
@@ -110,12 +117,13 @@ python gdrive_scheduler.py
 ```
 
 The script will:
-- Download MP3 files from Google Drive (Account 1)
+- Check which audio files haven't been transcribed in the last X days (configurable via `--days`)
+- Download those MP3 files from Google Drive (Account 1)
 - Transcribe using Groq
 - Upload `.txt` files to Google Drive (Account 2)
 - Move original MP3s to "processed" subfolder in Account 1
 
-**Setup required**: OAuth credentials, folder IDs. See [SETUP_GUIDE.md](SETUP_GUIDE.md) for step-by-step instructions.
+**Setup required**: OAuth credentials, folder IDs. See [GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) for step-by-step instructions.
 
 ## Supported Audio Formats
 
