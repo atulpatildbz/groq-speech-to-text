@@ -320,10 +320,29 @@ def compress_audio(input_path, output_path):
         return False
 
 
+def transcribe_with_local_whisper(audio_path):
+    """
+    Transcribe audio file using local Whisper large-v2 model (fallback).
+
+    Args:
+        audio_path: Path to audio file
+
+    Returns:
+        Transcription text
+    """
+    import whisper
+
+    print("  Loading local Whisper large-v2 model...")
+    model = whisper.load_model("large-v2")
+    print("  Transcribing locally (this may take a while)...")
+    result = model.transcribe(str(audio_path), temperature=0.0)
+    return result["text"]
+
+
 def transcribe_audio_file(audio_path):
     """
-    Transcribe audio file using Groq API.
-    Compresses large files with ffmpeg before sending.
+    Transcribe audio file using Groq API, falling back to local Whisper large-v2.
+    Compresses large files with ffmpeg before sending to Groq.
 
     Args:
         audio_path: Path to audio file
@@ -335,31 +354,30 @@ def transcribe_audio_file(audio_path):
     file_to_transcribe = audio_path
     temp_compressed_file = None
 
-    # Check if file exceeds Groq's 25MB limit
-    file_size = audio_path.stat().st_size
-    if file_size > MAX_FILE_SIZE:
-        file_size_mb = file_size / (1024 * 1024)
-        print(f"  File exceeds 25MB limit ({file_size_mb:.1f} MB). Compressing with ffmpeg...")
-        temp_compressed_file = audio_path.parent / f"temp_compressed_{audio_path.name}"
-        temp_compressed_file = temp_compressed_file.with_suffix('.mp3')
-
-        if not compress_audio(audio_path, temp_compressed_file):
-            raise Exception("Failed to compress audio file with ffmpeg")
-
-        compressed_size = temp_compressed_file.stat().st_size
-        compressed_size_mb = compressed_size / (1024 * 1024)
-        print(f"  Compressed to {compressed_size_mb:.1f} MB")
-
-        if compressed_size > MAX_FILE_SIZE:
-            if temp_compressed_file.exists():
-                temp_compressed_file.unlink()
-            raise Exception(f"File still too large after compression ({compressed_size_mb:.1f} MB)")
-
-        file_to_transcribe = temp_compressed_file
-
-    print(f"  Transcribing with Groq Whisper Large V3...")
-
+    # Try Groq API first
     try:
+        # Check if file exceeds Groq's 25MB limit
+        file_size = audio_path.stat().st_size
+        if file_size > MAX_FILE_SIZE:
+            file_size_mb = file_size / (1024 * 1024)
+            print(f"  File exceeds 25MB limit ({file_size_mb:.1f} MB). Compressing with ffmpeg...")
+            temp_compressed_file = audio_path.parent / f"temp_compressed_{audio_path.name}"
+            temp_compressed_file = temp_compressed_file.with_suffix('.mp3')
+
+            if not compress_audio(audio_path, temp_compressed_file):
+                raise Exception("Failed to compress audio file with ffmpeg")
+
+            compressed_size = temp_compressed_file.stat().st_size
+            compressed_size_mb = compressed_size / (1024 * 1024)
+            print(f"  Compressed to {compressed_size_mb:.1f} MB")
+
+            if compressed_size > MAX_FILE_SIZE:
+                raise Exception(f"File still too large after compression ({compressed_size_mb:.1f} MB)")
+
+            file_to_transcribe = temp_compressed_file
+
+        print(f"  Transcribing with Groq Whisper Large V3...")
+
         with open(file_to_transcribe, "rb") as audio_file:
             transcription = groq_client.audio.transcriptions.create(
                 file=(file_to_transcribe.name, audio_file.read()),
@@ -369,6 +387,12 @@ def transcribe_audio_file(audio_path):
             )
 
         return transcription.text
+
+    except Exception as e:
+        print(f"  Groq API failed: {e}")
+        print("  Falling back to local Whisper large-v2...")
+        return transcribe_with_local_whisper(audio_path)
+
     finally:
         # Clean up temporary compressed file
         if temp_compressed_file and temp_compressed_file.exists():

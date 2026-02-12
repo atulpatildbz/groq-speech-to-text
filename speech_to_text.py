@@ -58,15 +58,44 @@ def get_file_size_mb(file_path: Path) -> float:
     """Get file size in megabytes"""
     return file_path.stat().st_size / (1024 * 1024)
 
-def transcribe_audio(audio_file_path: Path) -> dict:
+def transcribe_with_local_whisper(audio_file_path: Path) -> dict:
     """
-    Transcribe audio file using Groq's Whisper Large V3 model
+    Transcribe audio file using local Whisper large-v2 model (fallback).
 
     Args:
         audio_file_path: Path to the audio file
 
     Returns:
-        dict: Transcription result with text and metadata
+        dict-like object with .text, .language, .duration attributes
+    """
+    import whisper
+
+    print("Loading local Whisper large-v2 model...")
+    model = whisper.load_model("large-v2")
+    print("Transcribing locally (this may take a while)...")
+    result = model.transcribe(str(audio_file_path), temperature=0.0)
+
+    # Wrap result to match Groq's response interface
+    class LocalResult:
+        def __init__(self, data):
+            self.text = data["text"]
+            self.language = data.get("language", "unknown")
+            segments = data.get("segments", [])
+            self.duration = segments[-1]["end"] if segments else 0.0
+
+    return LocalResult(result)
+
+
+def transcribe_audio(audio_file_path: Path) -> dict:
+    """
+    Transcribe audio file using Groq's Whisper Large V3 model,
+    falling back to local Whisper large-v2 if Groq fails.
+
+    Args:
+        audio_file_path: Path to the audio file
+
+    Returns:
+        Transcription result with text and metadata
     """
     file_to_transcribe = audio_file_path
     temp_compressed_file = None
@@ -75,35 +104,39 @@ def transcribe_audio(audio_file_path: Path) -> dict:
     file_size_mb = get_file_size_mb(audio_file_path)
     print(f"File size: {file_size_mb:.2f} MB")
 
-    if file_size_mb > 25:
-        print(f"File exceeds 25MB limit. Compressing...")
-        temp_compressed_file = audio_file_path.parent / f"temp_compressed_{audio_file_path.name}"
-        temp_compressed_file = temp_compressed_file.with_suffix('.mp3')
-
-        if not compress_audio(audio_file_path, temp_compressed_file):
-            raise Exception("Failed to compress audio file")
-
-        compressed_size_mb = get_file_size_mb(temp_compressed_file)
-        print(f"Compressed to: {compressed_size_mb:.2f} MB")
-
-        if compressed_size_mb > 25:
-            if temp_compressed_file.exists():
-                temp_compressed_file.unlink()
-            raise Exception(f"File still too large after compression ({compressed_size_mb:.2f} MB)")
-
-        file_to_transcribe = temp_compressed_file
-
-    print(f"Transcribing: {audio_file_path.name}")
-
     try:
+        if file_size_mb > 25:
+            print(f"File exceeds 25MB limit. Compressing...")
+            temp_compressed_file = audio_file_path.parent / f"temp_compressed_{audio_file_path.name}"
+            temp_compressed_file = temp_compressed_file.with_suffix('.mp3')
+
+            if not compress_audio(audio_file_path, temp_compressed_file):
+                raise Exception("Failed to compress audio file")
+
+            compressed_size_mb = get_file_size_mb(temp_compressed_file)
+            print(f"Compressed to: {compressed_size_mb:.2f} MB")
+
+            if compressed_size_mb > 25:
+                raise Exception(f"File still too large after compression ({compressed_size_mb:.2f} MB)")
+
+            file_to_transcribe = temp_compressed_file
+
+        print(f"Transcribing: {audio_file_path.name}")
+
         with open(file_to_transcribe, "rb") as audio_file:
             transcription = client.audio.transcriptions.create(
                 file=(file_to_transcribe.name, audio_file.read()),
                 model="whisper-large-v3",
-                response_format="verbose_json",  # Get detailed output with timestamps
-                temperature=0.0  # Lower temperature for more consistent results
+                response_format="verbose_json",
+                temperature=0.0
             )
         return transcription
+
+    except Exception as e:
+        print(f"Groq API failed: {e}")
+        print("Falling back to local Whisper large-v2...")
+        return transcribe_with_local_whisper(audio_file_path)
+
     finally:
         # Clean up temporary compressed file
         if temp_compressed_file and temp_compressed_file.exists():
